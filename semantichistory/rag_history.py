@@ -14,6 +14,7 @@ class RAGHistory:
         self.embed_model = 'nomic-embed-text'
         self.original_db_path = os.path.join("/home/neeraj/.config/google-chrome", "Profile 7", "History")
         self.copied_db_path = "/tmp/chrome_history_copy.db"
+        self.llm="llama3.1:8b"
 
     #MARK: decode_transition
     def decode_transition(self,transition):
@@ -282,7 +283,7 @@ class RAGHistory:
         """
 
         # Call Ollama to generate a response
-        response = ollama.chat(model="codegemma", messages=[{"role": "user", "content": prompt.format(query=query,formatted_entries=formatted_entries)}])
+        response = ollama.chat(model=self.llm, messages=[{"role": "user", "content": prompt.format(query=query,formatted_entries=formatted_entries)}])
 
         return response['message']['content']
 

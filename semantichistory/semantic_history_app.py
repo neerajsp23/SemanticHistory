@@ -1,5 +1,5 @@
 from fastapi import FastAPI, BackgroundTasks
-from rag_history import RAGHistory
+from .rag_history import RAGHistory
 
 app = FastAPI()
 
@@ -13,4 +13,4 @@ async def embed_async(text: str, background_tasks: BackgroundTasks):
 async def query(text: str):
     rag_history = RAGHistory()
     response = rag_history.query_history_assistant(text)
-    return {"response": f"Mock response for '{text}'"}
+    return {"response": response}
