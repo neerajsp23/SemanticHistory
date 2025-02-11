@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "semantichistory"
+version = "0.0.1"
+description = "A rag tool to search chrome history with ease"
+authors = ["neeraj <neerajsunil2002@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+pandas = "^2.2.3"
+ollama = "^0.4.7"
+chromadb = "^0.6.3"
+langchain-text-splitters = "^0.3.6"
+fastapi = {extras = ["standard"], version = "^0.115.8"}
+uvicorn = "^0.34.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
