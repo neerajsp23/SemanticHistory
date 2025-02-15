@@ -49,32 +49,39 @@ class RAGHistory:
         return meaning
 
     #MARK: get_chrome_history
-    def get_chrome_history(self):
+    def get_chrome_history(self, latest_timestamp=None):
         """
         Extract Chrome browsing history and save it to CSV files.
+        If `latest_timestamp` is provided, only fetch entries newer than this timestamp.
         """
         # Define original and copied database paths
-
-        # Copy the database to avoid locking issues
         shutil.copy2(self.original_db_path, self.copied_db_path)
-
-        # Connect to copied database
         conn = sqlite3.connect(self.copied_db_path)
         cursor = conn.cursor()
 
-        # Query history data with additional information
-        query = """
-            SELECT urls.url, urls.title, urls.visit_count, urls.typed_count, 
-                visits.visit_time, visits.transition 
-            FROM urls 
-            JOIN visits ON urls.id = visits.url 
-            ORDER BY visits.visit_time DESC
+        # Base query for history data
+        base_query = """
+        SELECT urls.url, urls.title, urls.visit_count, urls.typed_count, 
+            visits.visit_time, visits.transition 
+        FROM urls 
+        JOIN visits ON urls.id = visits.url
         """
 
+        # Add timestamp filtering if `latest_timestamp` is provided
+        if latest_timestamp:
+            # Convert ISO timestamp to Chrome epoch microseconds
+            chrome_epoch = datetime(1601, 1, 1)
+            latest_dt = datetime.fromisoformat(latest_timestamp)
+            latest_microseconds = int((latest_dt - chrome_epoch).total_seconds() * 1e6)
+            query = f"{base_query} WHERE visits.visit_time > {latest_microseconds} ORDER BY visits.visit_time DESC"
+        else:
+            query = f"{base_query} ORDER BY visits.visit_time DESC"
+
+        # Execute the query
         cursor.execute(query)
         results = cursor.fetchall()
 
-        # Convert Chrome timestamp to datetime
+        # Process results
         chrome_epoch = datetime(1601, 1, 1)
         data = []
         for url, title, visit_count, typed_count, timestamp, transition in results:
@@ -92,13 +99,12 @@ class RAGHistory:
 
         # Fetch search queries
         search_query = """
-            SELECT urls.url, keyword_search_terms.term 
-            FROM keyword_search_terms 
-            JOIN urls ON keyword_search_terms.url_id = urls.id;
+        SELECT urls.url, keyword_search_terms.term 
+        FROM keyword_search_terms 
+        JOIN urls ON keyword_search_terms.url_id = urls.id;
         """
         cursor.execute(search_query)
         search_results = cursor.fetchall()
-
         search_data = [{"url": url, "search_term": term} for url, term in search_results]
 
         conn.close()
@@ -106,6 +112,12 @@ class RAGHistory:
         # Create DataFrames
         history_df = pd.DataFrame(data)
         search_df = pd.DataFrame(search_data)
+
+        # Ensure DataFrames have the expected columns, even if empty
+        if history_df.empty:
+            history_df = pd.DataFrame(columns=["url", "title", "visit_count", "typed_count", "timestamp", "transition", "transition_meaning"])
+        if search_df.empty:
+            search_df = pd.DataFrame(columns=["url", "search_term"])
 
         # Save to CSV files for easy viewing
         history_df.to_csv("docs/chrome_browsing_history.csv", index=False)
@@ -148,37 +160,32 @@ class RAGHistory:
     #MARK: embed_history
     def embed_history(self):
         """
-        Set up ChromaDB with Chrome browsing history data.
+        Set up ChromaDB with Chrome browsing history data, embedding only new data not already in the database.
         """
-        # Get Chrome browsing history as text
-        history_text = self.get_chrome_history()
+        # Retrieve existing data from ChromaDB
+        collection = self.set_up_chromadb()
+
+        # Find the latest timestamp in ChromaDB
+        existing_timestamps = []
+        existing_data = collection.get(include=["metadatas"])
+        if existing_data and "metadatas" in existing_data:
+            for meta in existing_data["metadatas"]:
+                if "timestamp" in meta:
+                    try:
+                        existing_timestamps.append(datetime.fromisoformat(meta["timestamp"]))
+                    except ValueError:
+                        continue
+
+        latest_timestamp = max(existing_timestamps) if existing_timestamps else None
+
+        # Get Chrome browsing history (only new entries if latest_timestamp exists)
+        history_text = self.get_chrome_history(latest_timestamp.isoformat() if latest_timestamp else None)
         entries = history_text.split('\n')
 
-        # Create meaningful documents with metadata
-        documents = []
-        metadatas = []
-
-        for entry in entries:
-            # Parse entry back into key-value pairs
-            metadata = {}
-            fields = entry.split(', ')
-            for field in fields:
-                if ': ' in field:
-                    key, value = field.split(': ', 1)
-                    metadata[key] = value
-
-            # Create formatted document text
-            doc_text = f"""Title: {metadata.get('title', '')}
-    URL: {metadata.get('url', '')}
-    Visit Count: {metadata.get('visit_count', '')}
-    Typed Count: {metadata.get('typed_count', '')}
-    Timestamp: {metadata.get('timestamp', '')}
-    Transition: {metadata.get('transition', '')}
-    Transition_meaning: {metadata.get('transition_meaning', '')}
-    Search Term: {metadata.get('search_term', '')}"""
-
-            documents.append(doc_text)
-            metadatas.append(metadata)
+        # Skip embedding if no new entries
+        if not entries or (len(entries) == 1 and not entries[0].strip()):
+            print("No new entries to embed.")
+            return
 
         # Initialize text splitter
         text_splitter = RecursiveCharacterTextSplitter(
@@ -188,15 +195,38 @@ class RAGHistory:
             add_start_index=True
         )
 
+        # Create meaningful documents with metadata
+        documents = []
+        metadatas = []
+        for entry in entries:
+            metadata = {}
+            fields = entry.split(', ')
+            for field in fields:
+                if ': ' in field:
+                    key, value = field.split(': ', 1)
+                    metadata[key] = value
+
+            if not metadata:
+                continue
+
+            doc_text = f"""Title: {metadata.get('title', '')}
+    URL: {metadata.get('url', '')}
+    Visit Count: {metadata.get('visit_count', '')}
+    Typed Count: {metadata.get('typed_count', '')}
+    Timestamp: {metadata.get('timestamp', '')}
+    Transition: {metadata.get('transition', '')}
+    Transition_meaning: {metadata.get('transition_meaning', '')}
+    Search Term: {metadata.get('search_term', '')}"""
+            documents.append(doc_text)
+            metadatas.append(metadata)
+
         # Split documents
         all_splits = []
         all_metadatas = []
-
         for doc, meta in zip(documents, metadatas):
             splits = text_splitter.create_documents([doc], [meta])
             for split in splits:
                 all_splits.append(split.page_content)
-                # Add position information to metadata
                 all_metadatas.append({
                     **meta,
                     "chunk_start": split.metadata.get('start_index', 0),
@@ -206,16 +236,14 @@ class RAGHistory:
         # Generate embeddings for all chunks
         embeddings = [self.generate_embeddings(text) for text in all_splits]
 
-        # Create Chroma collection
-        collection = self.set_up_chromadb()
-
         # Add to ChromaDB with proper chunking
         collection.add(
             embeddings=embeddings,
             documents=all_splits,
             metadatas=all_metadatas,
-            ids=[str(i) for i in range(len(all_splits))]
+            ids=[str(i + len(existing_data.get("ids", []))) for i in range(len(all_splits))]
         )
+        print(f"Added {len(all_splits)} new chunks to ChromaDB.")
 
     def query_history_assistant(self, query: str):
         """
@@ -289,5 +317,6 @@ class RAGHistory:
 
 if __name__ == '__main__':
     rgh = RAGHistory()
+    rgh.embed_history()
     response = rgh.query_history_assistant("Give me the time I looked into henrythe9th git repo")
     print(response)
